@@ -1,0 +1,85 @@
+// pet/pinkmaid-config.json —— 文件宠物（pet pack）：粉毛小女仆
+//
+// 素材目录：$DSH_HOME/dsh-pet/pet/pinkmaid-animation/（**平铺** .webm，不建 webm/ 子目录）
+// 想加动作：把转好的 xxx.webm 放进素材目录，再把名字写进下面的动画池，重启桌面 Helper 即可。
+//
+// 素材（由即梦/豆包绿幕视频经 dsh-pet-assets 管线转出，**每段各自归一**到身高 266px/脚底 y=330，
+// 所以源片里人物画得大一点小一点都没关系，切换动作时不会跳）：
+//   待机.webm       idle       站立待机（全身带脚）
+//   拎起来.webm     drag       被拎起来悬空挣扎（拖拽时播放）
+//   转身.webm       turn       原地转身一周
+//   转身2.webm      turn       另一版转身
+//   左右看.webm     turn/edge  左右张望（同时是边缘探头用的动作）
+//   打招呼.webm     clicks     跳起来打招呼、眯眼笑冒爱心（点击时播放）
+//   眨眼卖萌.webm   categories 单眼眨眼卖萌（随机小动作）
+//   左跑.webm       moves      跑步（素材标准朝向 = 朝左）
+//   右跑.webm       moves      跑步（**转换时已水平镜像**成朝左，否则插件按朝向镜像时会反着跑）
+//
+// ⚠️ 朝向约定：插件默认朝向是 left（不镜像），朝右时自动 scaleX(-1)——
+//    所以**所有动作素材都应该是「朝左」的**，朝右的素材必须先镜像再放进来。
+//
+// ⚠️ 权重与分类的关系：animationWeights 的 idle+turn+move 和所有 categories 的 weight
+//    **加起来要是 100**。move 是 0 时走路那一支永远轮不到（加进 moves.actions 也不会走）。
+//
+// 联动还关着：balance / whisper / workStatus 各自要动画素材，没有素材开了会 404。
+{
+  "pets": [
+    {
+      "id": "pinkmaid",
+      "name": "粉毛小女仆",
+      "size": 420,
+      "balanceEnabled": false,
+      "whisperEnabled": false,
+      "workStatusEnabled": false,
+      "fixedEnabled": false,
+      "display": "desktop",
+      "position": { "corner": "bottom-right", "marginX": 24, "marginY": 100 }
+    }
+  ],
+  "animations": {
+    "idle": ["待机"],
+    "turn": ["转身", "转身2", "左右看"],
+    "drag": ["拎起来"],
+    "clicks": ["打招呼"],
+    "moves": {
+      // 距离比随包默认（60~240）大不少：跑步素材是"原地跑"，位移太短会像慢动作
+      "default": { "minDist": 260, "maxDist": 620, "margin": 20, "leadSec": 1.5, "tailSec": 2 },
+      "actions": [
+        { "name": "左跑" },
+        { "name": "右跑", "params": { "minDist": 300, "maxDist": 700 } }
+      ]
+    },
+    "categories": [
+      { "id": "小动作", "weight": 10, "actions": ["眨眼卖萌"] }
+    ],
+    // 边缘探头：这一整段原本从主宠物继承，池子里写的是主宠物素材名（她根本没有那些素材，会 404）。
+    // 现在换成她自己的：探头时「左右看」，停在边缘期间在她自己的安静动作里随机。
+    "edge": {
+      "enabled": true,
+      "chance": 0.15,
+      "cooldownSec": 120,
+      "side": "random",
+      "pool": ["左右看"],
+      "peekRatio": 0.42,
+      "keepY": true,
+      "hideMs": 420,
+      "peekMs": 520,
+      "returnMs": 900,
+      "holdMs": 20000,
+      "dropTrigger": true,
+      "triggerDistRatio": 0.35,
+      "parkAtEdge": true,
+      "parkedPool": ["待机", "眨眼卖萌"],
+      "tiltDeg": 45,
+      "tiltDir": "in",
+      "tiltPivot": "feet",
+      "tiltScope": "peek"
+    },
+    // 注意：插件校验要求 events.balance 必须是**非空数组**（校验代码里写死的），
+    // 哪怕这只宠物 balanceEnabled=false；写成 {} 会导致整个 animations 判非法、静默回落成主宠物的池子。
+    "events": { "balance": ["待机"] }
+  },
+  // idle 70 + turn 10 + move 10 + 小动作 10 = 100
+  "animationWeights": { "idle": 70, "turn": 10, "move": 10 },
+  "eventsRefreshSec": { "balance": 1800, "whisper": 300 }
+}

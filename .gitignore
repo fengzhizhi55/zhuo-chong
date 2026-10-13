@@ -1,0 +1,18 @@
+# 忽略运行时/开发产物，只让源码、补丁、宠物包与文档进仓库
+.tools/
+out/
+step01/
+step02/
+step03/
+video/
+preview/
+*.zip
+*.rgba
+*.tmp
+_backup-*/
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

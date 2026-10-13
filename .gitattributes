@@ -1,0 +1,16 @@
+# 默认按内容自动识别文本/二进制；下面显式声明，避免 Windows 上 core.autocrlf 动到二进制素材
+* text=auto
+
+*.webm binary
+*.mp4 binary
+*.png binary
+*.jpg binary
+*.ttf binary
+*.zip binary
+
+*.ps1 text eol=crlf
+*.md  text eol=lf
+*.py  text eol=lf
+*.js  text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
