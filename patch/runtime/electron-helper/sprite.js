@@ -462,6 +462,18 @@ class PetSprite {
       if (!this.pending || this.pending.gen !== gen) return;
       this.pending = null;
       console.warn('[dsh-pet] 素材加载失败 pet=' + this.pet.id + ' anim=' + next + '：' + why + '（已释放本次切换）');
+      // 【补】释放之后必须**把随机链重新点着**：这次动画根本没播起来 → 不会有 ended →
+      // handleEnded 永远不会来 → 链子就此永久停摆（表现：宠物定格在最后一帧，再也不换动作，
+      // 也不再有随机小动作）。加一个带次数上限的重试，避免素材真的缺失时无限重试。
+      this.loadRetries = (this.loadRetries || 0) + 1;
+      if (this.loadRetries > 20) {
+        console.warn('[dsh-pet] 连续加载失败 ' + this.loadRetries + ' 次，停止自动重试（等下一次拖拽/点击触发）');
+        return;
+      }
+      window.setTimeout(() => {
+        if (this.pending || this.disposed || (this.dragState && this.dragState.active)) return;
+        this.playIdle();
+      }, 1500);
     };
     const loadTimer = window.setTimeout(() => loadGuard('10s 超时'), 10000);
     el.onerror = () => {
@@ -483,6 +495,7 @@ class PetSprite {
       }
       this.front = this.front === 0 ? 1 : 0;
       this.pending = null;
+      this.loadRetries = 0; // 切换成功 → 重置加载失败计数（见 loadGuard）
       el.style.transform = this.facing === 'right' ? 'scaleX(-1)' : '';
       el.play().catch(() => {});
       // 点击 Q 弹：等新动画就位后才压（压的是新点击动画的首帧，与浏览器一致）

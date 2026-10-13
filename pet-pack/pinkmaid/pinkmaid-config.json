@@ -50,7 +50,10 @@
       ]
     },
     "categories": [
-      { "id": "小动作", "weight": 10, "actions": ["眨眼卖萌"] }
+      // 随机小动作：权重越大越常出现（这里的 weight 和 animationWeights 三档**加起来要是 100**）。
+      // 注意挑**一眼能看见**的动作：打招呼是跳起来+冒爱心（最明显），左右看/转身2 是全身动作；
+      // 眨眼卖萌太细微（只是眨一下眼），放进来只是凑数。
+      { "id": "小动作", "weight": 40, "actions": ["打招呼", "左右看", "转身2", "眨眼卖萌"] }
     ],
     // 边缘探头：这一整段原本从主宠物继承，池子里写的是主宠物素材名（她根本没有那些素材，会 404）。
     // 现在换成她自己的：探头时「左右看」，停在边缘期间在她自己的安静动作里随机。
@@ -77,9 +80,15 @@
     },
     // 注意：插件校验要求 events.balance 必须是**非空数组**（校验代码里写死的），
     // 哪怕这只宠物 balanceEnabled=false；写成 {} 会导致整个 animations 判非法、静默回落成主宠物的池子。
-    "events": { "balance": ["待机"] }
+    //
+    // ⚠️⚠️ 但**千万别把日常动画名（尤其 idle 池里的）写进这里**：handleEnded 用 isEventAnim()
+    // 判断"当前动画是不是事件动画"，命中的话播完就直接回 idle、**永远不进随机链** ——
+    // 表现就是"宠物定格在待机、再也不换动作、也没有随机小动作"。
+    // 这里放一个永远不会被播放的占位名（她 balanceEnabled=false，这个池子根本不会被用到）。
+    "events": { "balance": ["balance-unused-placeholder"] }
   },
-  // idle 70 + turn 10 + move 10 + 小动作 10 = 100
-  "animationWeights": { "idle": 70, "turn": 10, "move": 10 },
+  // idle 40 + turn 10 + move 10 + 小动作 40 = 100
+  // （原来 idle 70：她 70% 的时间都在重播同一段「待机」，看起来就是一动不动；现在把大头让给随机小动作）
+  "animationWeights": { "idle": 40, "turn": 10, "move": 10 },
   "eventsRefreshSec": { "balance": 1800, "whisper": 300 }
 }
