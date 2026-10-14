@@ -81,6 +81,23 @@ const EDGE_IDLE_DEFAULT = {
 };
 
 // ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
+
+/**
+ * 宠物间互动（animations.social）的缺省值 —— 与 EDGE_IDLE_DEFAULT 同理：配置是**整段替换**的，
+ * 用户一旦在 main-config.jsonc 里写了 animations，就不会从包内配置补子键，所以缺省必须写在代码里。
+ *   radiusRatio      ：多近算"凑在一起"（自己的身宽 × 该倍数）
+ *   greetChance      ：每次凑近有多大比例会打招呼（不想每次都打就调小）
+ *   greetCooldownSec ：同一对宠物两次打招呼之间的最小间隔
+ *   lines            ：台词表（本地随机抽，零模型成本；填 8~10 句随机感最好）
+ * 这些台词只是**兜底**：每只宠物都可以在自己的配置里写一份自己的。
+ */
+const SOCIAL_DEFAULT = {
+  radiusRatio: 1.6,
+  greetChance: 0.35,
+  greetCooldownSec: 240,
+  lines: ['今天也在一起呀', '你好呀', '又见面了～', '要不要一起玩？'],
+};
+
 class PetSprite {
   constructor(pet) {
     this.pet = pet; // 这只宠物的配置段（拍平后的成品实例，条目级字段已吹入：动画池/权重/周期）
@@ -144,6 +161,12 @@ class PetSprite {
     this.lastLookAt = -Infinity; // 上次"朝光标张望"的时间戳（冷却用）
     this.lastGreetAt = -Infinity; // 上次"贴上来打招呼"的时间戳（冷却用）
     this.lastFaceFlipAt = -Infinity; // 上次因光标翻镜像的时间戳（防与转身链互相打架）
+    // 宠物间互动（animations.social）：位置来自主进程广播的 this.others，不需要新通道
+    this.socialCfg = this.animations.social || {};
+    this.socialTickAt = 0; // 节流用（广播是逐帧来的，判定压到 2Hz）
+    this.socialNearId = null; // 当前"凑在一起"的那只；走开置空，下次靠近才重新判定
+    this.socialGreetAt = -Infinity; // 上次打招呼的时间戳（同两只之间的冷却）
+    this.socialLastLine = ''; // 上次说的台词（避免连着重复同一句）
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
@@ -317,6 +340,7 @@ class PetSprite {
           };
         }
         this.others = next;
+        this.socialTick(); // 宠物间互动（凑近就互相看一眼，偶尔打个招呼）
       });
       window.petBridge.onPetHit((payload) => {
         const vx = Number(payload && payload.vx);
@@ -643,6 +667,82 @@ class PetSprite {
     this.facing = next;
     const el = this.front === 0 ? this.videoA : this.videoB;
     if (el) el.style.transform = next === 'right' ? 'scaleX(-1)' : '';
+  }
+
+  /**
+   * 宠物间互动：跟别的宠物凑得太近就互相看一眼，偶尔打个招呼。
+   *
+   * 位置数据是现成的 —— 主进程每次位置上报都会把**所有宠物**的状态广播过来（跨窗碰撞 broker），
+   * 渲染端早就订阅了（this.others，且已经换算到同一坐标系），所以这里不需要任何新通道。
+   * 判定节流到 2Hz（广播是逐帧来的，没必要每帧算）。
+   *
+   * 打招呼：只在**从"分开"变成"凑近"的那一刻**触发一次，且带概率与冷却 —— 否则两只挨着坐着
+   * 会没完没了地互相打招呼。台词从自己的台词表里随机抽，走宿主 /broadcast 写气泡（**零模型成本**），
+   * 动作从自己的 clicks 池里抽（所以粉毛冒爱心、蓝毛是点击回应-*，各自自然）。
+   *
+   * 配置：animations.social = { enabled, radiusRatio, greetChance, greetCooldownSec, lines }
+   */
+  socialTick() {
+    const cfg = this.socialCfg;
+    if (!cfg || cfg.enabled === false) return;
+    const now = performance.now();
+    if (now - this.socialTickAt < 500) return;
+    this.socialTickAt = now;
+    // 拖拽 / 漫游 / 抛掷 / 边缘探头序列 / 停在边缘：一律不掺和（位置或姿态由别的调度负责）
+    if (this.dragState.active || this.moveRef !== null || this.throwRef !== null || this.edgeSeq || this.edgeParked) return;
+    const half = this.halfW;
+    const myCx = this.pos.x + half;
+    const myCy = this.pos.y + half;
+    let near = null;
+    let nearDist = Infinity;
+    for (const pid of Object.keys(this.others)) {
+      const o = this.others[pid];
+      if (!o || !o.size) continue;
+      const dx = o.x + o.size / 2 - myCx;
+      const dy = o.y + o.size / 2 - myCy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < nearDist) {
+        nearDist = d;
+        near = { pid, dx };
+      }
+    }
+    if (!near || nearDist > (cfg.radiusRatio ?? SOCIAL_DEFAULT.radiusRatio) * this.size) {
+      this.socialNearId = null; // 分开了：下次再凑近才重新判定
+      return;
+    }
+    // 面对面：朝对方那侧（只翻镜像，不换动画）
+    const want = near.dx < 0 ? 'left' : 'right';
+    if (this.facing !== want && now - this.lastFaceFlipAt > 2000) {
+      this.lastFaceFlipAt = now;
+      this.setFacing(want);
+    }
+    if (this.socialNearId === near.pid) return; // 已经凑在一起了，不重复触发
+    this.socialNearId = near.pid;
+    // 刚凑近：按概率打招呼（同两只之间有冷却）
+    if (now - this.socialGreetAt < (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) return;
+    if (Math.random() > (cfg.greetChance ?? SOCIAL_DEFAULT.greetChance)) return;
+    this.socialGreetAt = now;
+    const lines = Array.isArray(cfg.lines) && cfg.lines.length ? cfg.lines : SOCIAL_DEFAULT.lines;
+    this.socialSay(lines);
+    if (this.animations.clicks.length) this.playOnce(S.pick(this.animations.clicks, this.anim));
+  }
+
+  /** 随机挑一句台词发到自己窗口的气泡：走宿主 /broadcast?pet=<自己>（纯文本，不经模型） */
+  socialSay(lines) {
+    let text = lines[Math.floor(Math.random() * lines.length)];
+    if (lines.length > 1 && text === this.socialLastLine) {
+      text = lines[(lines.indexOf(text) + 1) % lines.length]; // 尽量别连着说同一句
+    }
+    this.socialLastLine = text;
+    try {
+      fetch(BASE + '/broadcast?pet=' + encodeURIComponent(this.pet.id), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }).catch(() => {});
+    } catch {
+      /* 气泡是锦上添花，失败无所谓 */
+    }
   }
 
   handleEnded() {

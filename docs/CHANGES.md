@@ -103,6 +103,29 @@
 - 配置：`animations.cursor = { enabled, lookRadius, greetRadius, lookCooldownSec, greetCooldownSec, look, greet }`，
   不写就用内置默认（默认开），可按宠物单独关。
 
+### 3.4 宠物间互动（`socialTick` / `socialSay`）
+
+两只宠物凑近时会互相看一眼，偶尔打个招呼、各说一句自己的台词。
+
+- **不需要新通道**：位置数据本来就是现成的 —— 主进程每次位置上报都会把**所有宠物**的状态广播给所有宠物窗
+  （跨窗碰撞 broker 用的那条），渲染端早已订阅（`this.others`，且已换算到同一坐标系）。判定节流到 2Hz。
+- **只在"从分开变成凑近"的那一刻触发一次**（`socialNearId`），否则两只挨着坐会没完没了地互相招呼；
+  另有概率（默认 35%）与冷却（默认 240 秒，同一对之间）。
+- **台词本地随机抽**（尽量不重复上一句）→ 走宿主 `POST /broadcast?pet=<自己>` 写气泡，
+  **完全不经过模型 → 零 token**。随机感来自"概率触发 + 台词随机 + 谁先说随机"。
+- 动作从自己的 `clicks` 池抽 → 粉毛冒爱心、蓝毛点击回应-*，各自自然。
+- 拖拽 / 漫游 / 抛掷 / 边缘探头 / 停在边缘时一律不掺和。
+- 配置：`animations.social = { enabled, radiusRatio, greetChance, greetCooldownSec, lines }`，
+  不写走代码里的 `SOCIAL_DEFAULT`（与 `EDGE_IDLE_DEFAULT` 同理：配置是整段替换的，缺省必须写在代码里）。
+- 实测：两只真的互相打了招呼，**各说各的台词**（`pinkmaid.say="今天也要乖乖的哦"` / `main.say="你今天也在摸鱼？"`），
+  两条气泡只差 2ms —— 说明双方各自独立判定、都触发了。若觉得"同时开口"有点吵，可以让 id 较小的一方先开口（待定）。
+
+### 3.5 宠物间碰撞（配置项，无需改代码）
+
+`physics.petCollision: true`（在 `main-config.jsonc`，用户级 → 两只共用）后，把一只**扔向**另一只
+会真的撞上并按动量互相弹开（跨窗 broker 结算，`restitution 0.78`）。
+⚠️ 只在"被扔出去飞行"时生效 —— 走路撞上去不触发（走路是脚本位移，不是物理）。
+
 ---
 
 ## 4. `patch/runtime/electron-helper/main.js`

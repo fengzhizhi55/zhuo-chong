@@ -127,6 +127,25 @@
       "lookCooldownSec": 25,
       "greetCooldownSec": 60
     },
+    // 宠物间互动：和蓝毛凑近时会互相看一眼，偶尔打个招呼。
+    // 台词是**本地随机抽**的（走宿主 /broadcast 写气泡），完全不经过模型 → 零 token。
+    // greetChance 调小 = 更矜持；greetCooldownSec 是"同一对之间"的冷却（太短会没完没了）。
+    "social": {
+      "enabled": true,
+      "radiusRatio": 1.6,
+      "greetChance": 0.35,
+      "greetCooldownSec": 240,
+      "lines": [
+        "前辈在呀！",
+        "我可不是新来的～",
+        "要不要一起玩？",
+        "主人把我做得比你可爱哦",
+        "别抢我位置呀",
+        "哼，你也没在干活嘛",
+        "陪我玩一会儿嘛",
+        "今天也要乖乖的哦"
+      ]
+    },
     "events": {
       "balance": [
         "balance-unused-placeholder"
