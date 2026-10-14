@@ -95,6 +95,9 @@ const SOCIAL_DEFAULT = {
   radiusRatio: 1.6,
   greetChance: 0.35,
   greetCooldownSec: 240,
+  // 谁先开口：id 小的一方先说，另一方等这段时间再回（1.2~3 秒，随机取）
+  replyMinSec: 1.2,
+  replyMaxSec: 3,
   lines: ['今天也在一起呀', '你好呀', '又见面了～', '要不要一起玩？'],
 };
 
@@ -167,6 +170,11 @@ class PetSprite {
     this.socialNearId = null; // 当前"凑在一起"的那只；走开置空，下次靠近才重新判定
     this.socialGreetAt = -Infinity; // 上次打招呼的时间戳（同两只之间的冷却）
     this.socialLastLine = ''; // 上次说的台词（避免连着重复同一句）
+    this.socialReplyAt = 0; // 待回话的时刻（我是回话方时用；0 = 没有待回话）
+    this.socialReplyTo = null; // 要回谁
+    // 判定除了跟着位置广播跑，还要有自己的低频心跳：位置没变时主进程不会上报，
+    // 光靠广播会让"回话"被拖到下一次位置变化（实测拖成了 5.5 秒）。1 秒一次，配合 500ms 节流足够。
+    this.socialTimer = window.setInterval(() => this.socialTick(), 1000);
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
@@ -355,6 +363,7 @@ class PetSprite {
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
+    if (this.socialTimer !== null) window.clearInterval(this.socialTimer); // 宠物互动心跳
     if (this.chatClose) {
       this.chatClose();
       this.chatClose = null;
@@ -680,6 +689,10 @@ class PetSprite {
    * 会没完没了地互相打招呼。台词从自己的台词表里随机抽，走宿主 /broadcast 写气泡（**零模型成本**），
    * 动作从自己的 clicks 池里抽（所以粉毛冒爱心、蓝毛是点击回应-*，各自自然）。
    *
+   * **谁先开口**：id 小的一方（实测里是蓝毛 main）先说，另一方等 1.2~3 秒再回 —— 否则两只会在同一帧
+   * 同时开口，看起来像抢话（实测就是这样：两条气泡只差 2ms）。回的一方还会先读宿主的 /state 确认
+   * 对方**真的刚说过话**，避免对着空气自言自语。
+   *
    * 配置：animations.social = { enabled, radiusRatio, greetChance, greetCooldownSec, lines }
    */
   socialTick() {
@@ -708,6 +721,7 @@ class PetSprite {
     }
     if (!near || nearDist > (cfg.radiusRatio ?? SOCIAL_DEFAULT.radiusRatio) * this.size) {
       this.socialNearId = null; // 分开了：下次再凑近才重新判定
+      this.socialReplyAt = 0; // 走开了就别再回了
       return;
     }
     // 面对面：朝对方那侧（只翻镜像，不换动画）
@@ -716,15 +730,58 @@ class PetSprite {
       this.lastFaceFlipAt = now;
       this.setFacing(want);
     }
+    // 轮到我回话的时间到了：先确认对方刚说过话，再回一句
+    if (this.socialReplyAt && now >= this.socialReplyAt) {
+      const to = this.socialReplyTo;
+      this.socialReplyAt = 0;
+      this.socialReplyTo = null;
+      if (to && now - this.socialGreetAt >= (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) {
+        this.socialCheckOtherSpoke(to, (spoke) => {
+          if (!spoke) return;
+          this.socialGreetAt = performance.now();
+          this.socialGreet(cfg);
+        });
+      }
+      return;
+    }
     if (this.socialNearId === near.pid) return; // 已经凑在一起了，不重复触发
     this.socialNearId = near.pid;
-    // 刚凑近：按概率打招呼（同两只之间有冷却）
+    // 刚凑近：先看冷却，再决定"我来开口"还是"我等着回话"
     if (now - this.socialGreetAt < (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) return;
-    if (Math.random() > (cfg.greetChance ?? SOCIAL_DEFAULT.greetChance)) return;
-    this.socialGreetAt = now;
-    const lines = Array.isArray(cfg.lines) && cfg.lines.length ? cfg.lines : SOCIAL_DEFAULT.lines;
+    if (this.pet.id < near.pid) {
+      // 我是 id 小的一方 → 我先开口（按概率，免得每次都开口）
+      if (Math.random() > (cfg.greetChance ?? SOCIAL_DEFAULT.greetChance)) return;
+      this.socialGreetAt = now;
+      this.socialGreet(cfg);
+    } else {
+      // 我是回话方 → 等一小会儿再说，而且要等对方真的开了口
+      const minMs = (cfg.replyMinSec ?? SOCIAL_DEFAULT.replyMinSec) * 1000;
+      const maxMs = (cfg.replyMaxSec ?? SOCIAL_DEFAULT.replyMaxSec) * 1000;
+      this.socialReplyAt = now + minMs + Math.random() * Math.max(0, maxMs - minMs);
+      this.socialReplyTo = near.pid;
+    }
+  }
+
+  /** 真正开口：抽一句台词（/broadcast 写气泡）+ 从自己的 clicks 池抽一段动作 */
+  socialGreet(cfg) {
+    const lines = Array.isArray(cfg && cfg.lines) && cfg.lines.length ? cfg.lines : SOCIAL_DEFAULT.lines;
     this.socialSay(lines);
     if (this.animations.clicks.length) this.playOnce(S.pick(this.animations.clicks, this.anim));
+  }
+
+  /** 读宿主 /state 看对方最近说过话没（气泡的 counter 就是写入时刻的毫秒时间戳）。纯读，零模型。 */
+  socialCheckOtherSpoke(pid, cb) {
+    try {
+      fetch(BASE + '/state')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((st) => {
+          const c = st && st.pets && st.pets[pid] && st.pets[pid].say && st.pets[pid].say.counter;
+          cb(typeof c === 'number' && Date.now() - c < 8000);
+        })
+        .catch(() => cb(false));
+    } catch {
+      cb(false);
+    }
   }
 
   /** 随机挑一句台词发到自己窗口的气泡：走宿主 /broadcast?pet=<自己>（纯文本，不经模型） */
