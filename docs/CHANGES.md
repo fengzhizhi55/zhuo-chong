@@ -164,6 +164,45 @@
 ```
 气泡位置（脚下翻转）**只做了代码验证、没能截图确认** ✗ —— 截图那两次它俩都被 DSH 窗口挡住/移出视野了。
 
+#### 3.4.3 自制宠物"气泡永远不显示"的坑（`events.js` 的 `showWhisper`）
+
+用户反馈"粉色的没有对话框"。诊断方法：给两只各发一条测试气泡，再读它们窗口里 `.pet-bubble` 元素
+的 `className / textContent / opacity` —— 结果粉毛恒为 `class="pet-bubble" text="" opacity=0`，蓝毛正常。
+
+根因在 `PetSprite.prototype.showWhisper`：
+
+```js
+const pool = this.animations.events?.whisper;
+if (!pool || pool.length === 0) {
+  console.error('配置缺少 animations.events.whisper，无法播放碎碎念动画');
+  return;          // ← 连气泡一起没了 ✗
+}
+```
+
+**碎碎念 / 命令气泡 / 对话回复这三类文本气泡全走这一个函数**，而它把"有没有说话动画"当成了
+能不能弹气泡的前提 ✗。自制宠物（粉毛）压根没有"说话"动画 → `events.whisper` 为空 → **宿主那边
+话说了、state 里也写了，桌面窗口里一个字都不显示** ✗，而且只有一行 `console.error` 很容易被忽略。
+
+⚠️ **顺带纠正一个错误结论**：一开始以为"碎碎念只写气泡、不需要素材" ——
+那只是**宿主侧**（`publishWhisper` 只写 `say`）✗，**桌面渲染侧必须有 `events.whisper` 才有气泡** ✗。
+两端都要看，只读了一半会得出反的结论。
+
+**修法**：池为空不再 return —— 有动画就播，没有就**只出气泡**（并降级成 `console.warn`）：
+
+```js
+const name = pool && pool.length ? S.pickSlot(S.pick(pool, this.anim), this.anim) : null;
+... this.renderBubble(); ...
+if (name) this.playOnce(name);
+```
+
+⚠️ 注意**不要**用"给 `events.whisper` 塞一个日常动画名"来绕过 ✗：`handleEnded` 用
+`isEventAnim(animations.events, ...)` 判定，把 `待机` 之类写进任何 events 池都会让随机链永久停摆
+（见 3.4 开头的同类坑）。
+
+实测（修复后）：粉毛 `.pet-bubble` = `is-whisper is-on` ✓ `text="今天也要乖乖的哦"` ✓ `opacity=1` ✓；
+给她直接发测试气泡也能正常显示 ✓。
+
+
 ### 3.5 宠物间碰撞（配置项，无需改代码）
 
 `physics.petCollision: true`（在 `main-config.jsonc`，用户级 → 两只共用）后，把一只**扔向**另一只
