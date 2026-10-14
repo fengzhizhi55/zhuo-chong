@@ -91,6 +91,11 @@
 - **开机自启**：登录项 `dsh-pet` → `wscript.exe` 跑一个 UTF-16LE 的 `autostart.vbs`（`cmd /c set DSH_PET_STANDALONE=1&& "<node>" "<lib/standalone.js>"`，隐藏窗口）
   - `findNode()`：环境变量 → PATH → Program Files → DSH 自带 node，且每个候选都实测 `process.versions.node` 主版本 ≥ 22
   - **`loginItemOn()` 用 `reg query` 而不是 Electron 的 `getLoginItemSettings`**：后者拿未加引号的 `path args` 去比注册表里带引号的值，永远返回 false
+  - ⏱️ **延迟启动 `AUTOSTART_DELAY_MS = 90000`（VBS 里 `WScript.Sleep 90000`）**：这是踩出来的 ✗ ——
+    桌宠在登录瞬间拉起 `node + Electron（好几个进程）`，会和应用商店类的启动任务抢资源；
+    **实测连续几次开机把 TranslucentTB 挤掉了**（TTB 的启动任务注册一直是 `State=2` 启用状态 ✓，
+    说明不是被改坏了，而是"系统繁忙时应用商店启动任务会被延迟甚至跳过"）。
+    延迟到登录高峰之后再起即可。想让她早点出现就把这个常量调小。
 - `findDsh()`：探测 DeepSeek Harness 可执行文件路径
 
 ---

@@ -694,6 +694,7 @@ app.whenReady().then(() => {
 
   createPetWindows();
 
+
   // 宠物窗口跟随：renderer 逐帧上报窗口内容区位置/尺寸
   ipcMain.on('pet:set-bounds', (event, bounds) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -802,6 +803,10 @@ app.whenReady().then(() => {
   //   · 脚本里注入 DSH_PET_STANDALONE=1：这只启动后会盯着 DSH 进程，一旦 DSH 起来就整个收尾
   //     （见文件上方"互斥"一段），所以用户不会同时看到两只桌宠。
   const AUTOSTART_NAME = 'dsh-pet';
+  /** 开机自启动延迟（毫秒）：登录瞬间系统很忙，桌宠（node + Electron 多进程）会挤掉别的启动项
+   *  （实测影响到 TranslucentTB 这类应用商店启动任务）。延迟到登录高峰之后再起。
+   *  想让桌宠早点出现就调小；想更安全就调大。 */
+  const AUTOSTART_DELAY_MS = 90000;
   const WSCRIPT = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe');
   const dshHome = process.env.DSH_HOME || path.join(require('node:os').homedir(), '.dsh');
   const autostartVbs = path.join(dshHome, 'dsh-pet', 'autostart.vbs');
@@ -893,6 +898,12 @@ app.whenReady().then(() => {
       const body =
         '\uFEFF' +
         'Set sh = CreateObject("WScript.Shell")\r\n' +
+        // 延迟启动：登录瞬间拉起桌宠（node + Electron 好几个进程）会和别的启动项抢资源，
+        // 应用商店类的启动任务（例如 TranslucentTB）在系统繁忙时会被延迟甚至跳过 ——
+        // 实测"连续几次开机 TTB 都起不来"。睡够再起，避开登录高峰。
+        'WScript.Sleep ' +
+        AUTOSTART_DELAY_MS +
+        '\r\n' +
         'sh.Run "cmd /c set DSH_PET_STANDALONE=1&& ""' +
         node +
         '"" ""' +
