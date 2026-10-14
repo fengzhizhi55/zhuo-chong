@@ -700,6 +700,23 @@ app.whenReady().then(() => {
     startBridgeCallback(); // 宿主应答回调服务器（stdin 在 Electron 主进程不可用，改走本地 HTTP）
   }
 
+  // 渲染端的互动日志：走 IPC 落到 <DSH_HOME>/dsh-pet/social.log（只注册一次）。
+  // 宠物互动是"偶发 + 一闪而过"的行为（气泡 15 秒就没了），出问题时必须有据可查。
+  // 为什么不用 console-message：实测这版 Electron 收不到渲染端的 console（hook 装了也没反应）。
+  ipcMain.on('pet:social-log', (_event, line) => {
+    const text = typeof line === 'string' ? line : '';
+    if (!text || text.indexOf('[dsh-pet][social]') === -1) return;
+    try {
+      const file = path.join(dshHome, 'dsh-pet', 'social.log');
+      mkdirSync(path.dirname(file), { recursive: true });
+      fsPromises
+        .appendFile(file, new Date().toISOString().slice(11, 19) + ' ' + text + '\n')
+        .catch(() => {});
+    } catch {
+      /* 日志失败不影响任何功能 */
+    }
+  });
+
   createPetWindows();
 
 

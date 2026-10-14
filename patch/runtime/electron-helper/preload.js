@@ -57,6 +57,11 @@ contextBridge.exposeInMainWorld('petBridge', {
   onCursor(cb) {
     ipcRenderer.on('pet:cursor', (e, p) => cb(p));
   },
+  // 互动日志：渲染端不碰文件系统，交给主进程落到 dsh-pet/social.log（宠物互动一闪而过，
+  // 出问题要有据可查）。**不走 console-message** —— 实测这版 Electron 收不到渲染端的 console。
+  reportSocial(line) {
+    ipcRenderer.send('pet:social-log', String(line || ''));
+  },
   // ---- 设置（右键菜单「设置」）：都经主进程落地，渲染端不直接碰系统 ----
   //   settingsGet：读登录项真实状态 + DSH 主程序位置（渲染端只缓存展示）
   //   autoStartSet：开/关开机自启动（写 Windows 登录项，目标 = 独立模式）

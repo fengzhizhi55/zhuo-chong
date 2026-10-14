@@ -92,9 +92,12 @@ const EDGE_IDLE_DEFAULT = {
  * 这些台词只是**兜底**：每只宠物都可以在自己的配置里写一份自己的。
  */
 const SOCIAL_DEFAULT = {
-  radiusRatio: 1.6,
-  greetChance: 0.35,
-  greetCooldownSec: 240,
+  radiusRatio: 2.4, // 多近算"凑在一起"（身宽倍数）：2.4 ≈ 1000px，"放在附近"就够，不用精确叠在一起
+  greetChance: 1, // 凑近**必定**有一次（想恢复"有时不理你"就调小）
+  greetCooldownSec: 60, // 两次开口之间至少隔这么久（防反复拖来拖去刷屏）
+  idleMinSec: 90, // 挨着坐之后，隔这么久掷一次"要不要再聊一句"
+  idleMaxSec: 180,
+  idleChance: 0.5, // 再聊的概率（"偶尔再聊"的随机感来源）
   // 谁先开口：id 小的一方先说，另一方等这段时间再回（1.2~3 秒，随机取）
   replyMinSec: 1.2,
   replyMaxSec: 3,
@@ -172,9 +175,15 @@ class PetSprite {
     this.socialLastLine = ''; // 上次说的台词（避免连着重复同一句）
     this.socialReplyAt = 0; // 待回话的时刻（我是回话方时用；0 = 没有待回话）
     this.socialReplyTo = null; // 要回谁
+    this.socialNextAt = 0; // 挨在一起时，下一次"要不要再聊一句"的时刻
+    this.socialWatchAt = 0; // 回话方盯对方气泡的节流时刻（2 秒一次 /state）
+    this.socialLastSeenCounter = 0; // 已经接过的对方气泡 counter（避免重复接同一句）
     // 判定除了跟着位置广播跑，还要有自己的低频心跳：位置没变时主进程不会上报，
     // 光靠广播会让"回话"被拖到下一次位置变化（实测拖成了 5.5 秒）。1 秒一次，配合 500ms 节流足够。
     this.socialTimer = window.setInterval(() => this.socialTick(), 1000);
+    // 启动标记：主进程会把 [dsh-pet][social] 前缀的行落到 dsh-pet/social.log，
+    // 有这一行就能立刻确认"日志通道通不通"，没通也能一眼看出问题出在这个通道上。
+    this.socialLog('ready ' + this.pet.id + ' enabled=' + (this.socialCfg.enabled !== false));
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
@@ -739,33 +748,107 @@ class PetSprite {
         this.socialCheckOtherSpoke(to, (spoke) => {
           if (!spoke) return;
           this.socialGreetAt = performance.now();
-          this.socialGreet(cfg);
+          this.socialGreet(cfg, 'reply');
         });
       }
       return;
     }
-    if (this.socialNearId === near.pid) return; // 已经凑在一起了，不重复触发
-    this.socialNearId = near.pid;
-    // 刚凑近：先看冷却，再决定"我来开口"还是"我等着回话"
-    if (now - this.socialGreetAt < (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) return;
-    if (this.pet.id < near.pid) {
-      // 我是 id 小的一方 → 我先开口（按概率，免得每次都开口）
-      if (Math.random() > (cfg.greetChance ?? SOCIAL_DEFAULT.greetChance)) return;
+    // 已经凑在一起了：隔一阵子（idleMin~idleMax 秒）掷一次"要不要再聊一句"。
+    // 这是"凑近必有 + 之后偶尔再聊"里的后半段：放一起就能看到对话，但又不会一刻不停。
+    if (this.socialNearId === near.pid) {
+      // 我是**回话方**（id 大的那只）：不靠自己的随机定时器瞎等，而是盯着对方的气泡 ——
+      // 对方一开口（/state 里的 say.counter 变新），我隔一两秒就接话。
+      // 为什么不能靠自己的定时器：两人的随机时刻对不齐，"对方刚说话"的 8 秒窗口一晃就过，
+      // 结果就是大的一只永远在自言自语（实测踩过）。
+      if (this.pet.id > near.pid) this.socialWatchOther(near.pid, cfg, now);
+      // 开话头只由 id 小的一方负责（避免两边同时开口）
+      if (!this.socialNextAt) this.socialNextAt = now + this.socialIdleDelayMs(cfg);
+      if (now < this.socialNextAt) return;
+      this.socialNextAt = now + this.socialIdleDelayMs(cfg);
+      if (this.pet.id > near.pid) return; // 回话方走上面那条监视逻辑
+      if (now - this.socialGreetAt < (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) return;
+      if (Math.random() > (cfg.idleChance ?? SOCIAL_DEFAULT.idleChance)) return;
       this.socialGreetAt = now;
-      this.socialGreet(cfg);
-    } else {
-      // 我是回话方 → 等一小会儿再说，而且要等对方真的开了口
-      const minMs = (cfg.replyMinSec ?? SOCIAL_DEFAULT.replyMinSec) * 1000;
-      const maxMs = (cfg.replyMaxSec ?? SOCIAL_DEFAULT.replyMaxSec) * 1000;
-      this.socialReplyAt = now + minMs + Math.random() * Math.max(0, maxMs - minMs);
-      this.socialReplyTo = near.pid;
+      this.socialGreet(cfg, 'idle');
+      return;
+    }
+    // 刚凑近 → **必定**有一次（C 方案；想恢复随机就把 greetChance 调小）
+    this.socialNearId = near.pid;
+    this.socialNextAt = 0;
+    this.socialLastSeenCounter = 0;
+    if (now - this.socialGreetAt < (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) return;
+    if (Math.random() > (cfg.greetChance ?? SOCIAL_DEFAULT.greetChance)) return;
+    this.socialOpenConversation(cfg, near, now, 'approach');
+  }
+
+  /** 回话方专用：盯住对方的气泡时间戳，对方一开口就隔一两秒接话（节流 2 秒一次 /state） */
+  socialWatchOther(pid, cfg, now) {
+    if (now - this.socialWatchAt < 2000) return;
+    if (this.socialReplyAt) return; // 已经安排好了，别重复排
+    this.socialWatchAt = now;
+    try {
+      fetch(BASE + '/state')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((st) => {
+          const c = st && st.pets && st.pets[pid] && st.pets[pid].say && st.pets[pid].say.counter;
+          if (typeof c !== 'number') return;
+          if (c === this.socialLastSeenCounter) return; // 还是那句，接过了
+          if (Date.now() - c > 8000) return; // 太旧了（我这边卡了一下），不追
+          if (performance.now() - this.socialGreetAt < (cfg.greetCooldownSec ?? SOCIAL_DEFAULT.greetCooldownSec) * 1000) {
+            return; // 刚说过话，别抢话
+          }
+          this.socialLastSeenCounter = c;
+          this.socialReplyAt = performance.now() + this.socialReplyDelayMs(cfg);
+          this.socialReplyTo = pid;
+        })
+        .catch(() => {});
+    } catch {
+      /* 读不到就算了，下一拍再试 */
+    }
+  }
+
+  /** 开一个话头：id 小的一方开口，另一方安排一次"隔一两秒的回应" */
+  socialOpenConversation(cfg, near, now, why) {
+    if (this.pet.id < near.pid) {
+      this.socialGreetAt = now;
+      this.socialGreet(cfg, why);
+      return;
+    }
+    this.socialReplyAt = now + this.socialReplyDelayMs(cfg);
+    this.socialReplyTo = near.pid;
+  }
+
+  /** "再聊一句"的间隔：idleMinSec ~ idleMaxSec 之间随机 */
+  socialIdleDelayMs(cfg) {
+    const minMs = (cfg.idleMinSec ?? SOCIAL_DEFAULT.idleMinSec) * 1000;
+    const maxMs = (cfg.idleMaxSec ?? SOCIAL_DEFAULT.idleMaxSec) * 1000;
+    return minMs + Math.random() * Math.max(0, maxMs - minMs);
+  }
+
+  /** 回应的延迟：replyMinSec ~ replyMaxSec 之间随机 */
+  socialReplyDelayMs(cfg) {
+    const minMs = (cfg.replyMinSec ?? SOCIAL_DEFAULT.replyMinSec) * 1000;
+    const maxMs = (cfg.replyMaxSec ?? SOCIAL_DEFAULT.replyMaxSec) * 1000;
+    return minMs + Math.random() * Math.max(0, maxMs - minMs);
+  }
+
+  /** 互动日志：既进 devtools，也让主进程落到 dsh-pet/social.log（走已验证可用的 IPC 通道） */
+  socialLog(text) {
+    const line = '[dsh-pet][social] ' + text;
+    console.log(line);
+    try {
+      const b = window.petBridge;
+      if (b && typeof b.reportSocial === 'function') b.reportSocial(line);
+    } catch {
+      /* 日志失败不影响任何功能 */
     }
   }
 
   /** 真正开口：抽一句台词（/broadcast 写气泡）+ 从自己的 clicks 池抽一段动作 */
-  socialGreet(cfg) {
+  socialGreet(cfg, why) {
     const lines = Array.isArray(cfg && cfg.lines) && cfg.lines.length ? cfg.lines : SOCIAL_DEFAULT.lines;
-    this.socialSay(lines);
+    const text = this.socialSay(lines);
+    this.socialLog(this.pet.id + ' (' + (why || '?') + ') 「' + text + '」');
     if (this.animations.clicks.length) this.playOnce(S.pick(this.animations.clicks, this.anim));
   }
 
@@ -784,7 +867,7 @@ class PetSprite {
     }
   }
 
-  /** 随机挑一句台词发到自己窗口的气泡：走宿主 /broadcast?pet=<自己>（纯文本，不经模型） */
+  /** 随机挑一句台词发到自己窗口的气泡：走宿主 /broadcast?pet=<自己>（纯文本，不经模型）。返回说出去的那句。 */
   socialSay(lines) {
     let text = lines[Math.floor(Math.random() * lines.length)];
     if (lines.length > 1 && text === this.socialLastLine) {
@@ -800,6 +883,7 @@ class PetSprite {
     } catch {
       /* 气泡是锦上添花，失败无所谓 */
     }
+    return text;
   }
 
   handleEnded() {
@@ -2205,6 +2289,16 @@ class PetSprite {
       }
     }
     this.bubble.classList.add('is-on');
+    // 贴顶翻面：她离屏幕上边太近时，头顶气泡会整个画到屏幕外（看起来就是"没有气泡"）——
+    // 那时把气泡改画到脚下（CSS .pet-bubble.is-below）。
+    // 阈值按"气泡要占的高度"估：气泡底边在窗口顶下方 0.108×身宽处，往上还要放一两行字，
+    // 再加上她自己大半个身子，取 0.55×身宽比较稳。VIEW.y 是桌面几何原点（单屏为 0）。
+    try {
+      const myTop = (this.pos ? this.pos.y : 0) - (Number.isFinite(VIEW && VIEW.y) ? VIEW.y : 0);
+      this.bubble.classList.toggle('is-below', myTop < this.size * 0.55);
+    } catch {
+      /* 位置拿不到就按默认（头顶）显示 */
+    }
     window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
   }
 }
