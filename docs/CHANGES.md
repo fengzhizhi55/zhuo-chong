@@ -82,6 +82,27 @@
 
 配套 `refreshPerception()`（启动时读一次开关）、`flashNote()`（轻提示）。
 
+### 3.3 「看鼠标」（`onCursorPoint` / `setFacing`）
+
+主进程把真实光标位置转发进来，她据此做反应——**这是"灵动感"最直观的一招**：
+
+| 光标位置 | 她的反应 | 冷却 |
+|---|---|---|
+| 靠近（默认 2.4 倍身宽内） | 朝它那侧转身（只翻镜像，不换动画） | 翻镜像 2 秒一次 |
+| 在附近 | 从 **`turn` 池** 抽一段"张望" | 25 秒 |
+| 贴到身上（默认 0.8 倍身宽内） | 从 **`clicks` 池** 抽一段"打招呼" | 60 秒 |
+
+- **从池子里挑而不是写死动作名**：每只宠物素材不同（蓝猫是"东张西望/点击回应-*"，粉毛是"左右看/转身/打招呼"），
+  从她自己的池子里挑才能两只都自然，将来加素材也不用改代码。
+- **参考点夹回桌面**：停在屏幕边缘时她的包围盒中心常常在屏幕外，不夹的话真实光标永远够不着 →
+  她一停边缘，"看鼠标"就永久失效（这个坑实测踩过）。
+- **不打扰**：拖拽 / 漫游 / 抛掷 / 边缘探头序列期间一律直接返回；停驻在边缘时只转身张望、不打招呼
+  （半个身子在屏幕外，跳起来打招呼很怪）。
+- 冷却时间戳初值用 `-Infinity`：否则用 `performance.now()` 从 0 起算，页面刚加载的头一个冷却周期内完全不反应，
+  看上去就像没生效。
+- 配置：`animations.cursor = { enabled, lookRadius, greetRadius, lookCooldownSec, greetCooldownSec, look, greet }`，
+  不写就用内置默认（默认开），可按宠物单独关。
+
 ---
 
 ## 4. `patch/runtime/electron-helper/main.js`
@@ -97,12 +118,30 @@
     说明不是被改坏了，而是"系统繁忙时应用商店启动任务会被延迟甚至跳过"）。
     延迟到登录高峰之后再起即可。想让她早点出现就把这个常量调小。
 - `findDsh()`：探测 DeepSeek Harness 可执行文件路径
+- **转发真实光标位置**（「看鼠标」的源头）：主进程本来就有 `pointerTimer` 按 `POINTER_POLL_MS`
+  轮询 `screen.getCursorScreenPoint()` 做点击穿透判定 —— 这里**复用同一个点**（不额外轮询）转发给渲染端。
+  实测转发通道稳定（渲染端累计收到上千条）。
 
 ---
 
 ## 5. `patch/runtime/electron-helper/preload.js`
 
-新增 `settingsGet()` / `autoStartSet(on)` / `launchDsh()`（`contextBridge` + `ipcRenderer.invoke`）。
+新增 `settingsGet()` / `autoStartSet(on)` / `launchDsh()`（`contextBridge` + `ipcRenderer.invoke`），
+以及 **`onCursor(cb)`**（订阅主进程转发的真实光标位置，「看鼠标」用）。
+
+## 5b. `patch/runtime/electron-helper/renderer.js`
+
+新增：订阅 `petBridge.onCursor` → 分发给本窗口的 sprite（`s.onCursorPoint(p)`）。
+
+---
+
+## 坐标约定（改「看鼠标」这类功能前必看）
+
+- **主进程侧是物理像素**（窗口 bounds、逐屏几何、碰撞 broker、`screen.getCursorScreenPoint()`）；
+- **渲染端是 CSS 像素**（DOM 度量、`VIEW`/`AREAS`、`this.pos`、`toScreen`/`toLocal` 收口换算）；
+- 跨进程交换只允许在 `toScreen`（×scale 发出）/ `toLocal`（÷scale 收进）两处换算，组件代码里不得再乘除。
+- ⚠️ 我第一版测试就是**把窗口中心当 DIP 用**，注入点飞到屏幕外（2610,1287）→ 每次都被"太远"挡掉，
+  看起来像功能没生效。写这类测试时，坐标一律交给页面自己算（`local × CONFIG.scale`）。
 
 ---
 

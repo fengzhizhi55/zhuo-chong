@@ -52,6 +52,11 @@ contextBridge.exposeInMainWorld('petBridge', {
   onDisplays(cb) {
     ipcRenderer.on('pet:displays', (e, geo) => cb(geo));
   },
+  // 真实光标位置：主进程按 POINTER_POLL_MS 轮询后转发（屏幕物理像素）→ 宠物据此「看鼠标」。
+  // 与"命中判定/点击穿透"那条链路无关，所以光标在她窗口外时她也"感觉得到"。
+  onCursor(cb) {
+    ipcRenderer.on('pet:cursor', (e, p) => cb(p));
+  },
   // ---- 设置（右键菜单「设置」）：都经主进程落地，渲染端不直接碰系统 ----
   //   settingsGet：读登录项真实状态 + DSH 主程序位置（渲染端只缓存展示）
   //   autoStartSet：开/关开机自启动（写 Windows 登录项，目标 = 独立模式）

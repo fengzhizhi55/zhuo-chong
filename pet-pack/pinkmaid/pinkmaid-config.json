@@ -29,40 +29,76 @@
       "name": "粉毛小女仆",
       "size": 420,
       "balanceEnabled": false,
-      "whisperEnabled": false,
+      // A3：打开碎碎念 = 她偶尔会主动搭一句话。
+      // 关键：插件的碎碎念**只写气泡、不挑动画**（host publishWhisper 只写 say），
+      // 所以她不需要任何"说话"素材；但每句都是一次真实模型调用（周期见 eventsRefreshSec.whisper）。
+      "whisperEnabled": true,
       "workStatusEnabled": false,
       "fixedEnabled": false,
       "display": "desktop",
-      "position": { "corner": "bottom-right", "marginX": 24, "marginY": 100 }
+      "position": {
+        "corner": "bottom-right",
+        "marginX": 24,
+        "marginY": 100
+      }
     }
   ],
   "animations": {
-    "idle": ["待机"],
-    "turn": ["转身", "转身2", "左右看"],
-    "drag": ["拎起来"],
-    "clicks": ["打招呼"],
+    "idle": [
+      "待机"
+    ],
+    "turn": [
+      "转身",
+      "转身2",
+      "左右看"
+    ],
+    "drag": [
+      "拎起来"
+    ],
+    "clicks": [
+      "打招呼"
+    ],
     "moves": {
-      // 距离比随包默认（60~240）大不少：跑步素材是"原地跑"，位移太短会像慢动作
-      "default": { "minDist": 260, "maxDist": 620, "margin": 20, "leadSec": 1.5, "tailSec": 2 },
+      "default": {
+        "minDist": 260,
+        "maxDist": 620,
+        "margin": 20,
+        "leadSec": 1.5,
+        "tailSec": 2
+      },
       "actions": [
-        { "name": "左跑" },
-        { "name": "右跑", "params": { "minDist": 300, "maxDist": 700 } }
+        {
+          "name": "左跑"
+        },
+        {
+          "name": "右跑",
+          "params": {
+            "minDist": 300,
+            "maxDist": 700
+          }
+        }
       ]
     },
     "categories": [
-      // 随机小动作：权重越大越常出现（这里的 weight 和 animationWeights 三档**加起来要是 100**）。
-      // 注意挑**一眼能看见**的动作：打招呼是跳起来+冒爱心（最明显），左右看/转身2 是全身动作；
-      // 眨眼卖萌太细微（只是眨一下眼），放进来只是凑数。
-      { "id": "小动作", "weight": 40, "actions": ["打招呼", "左右看", "转身2", "眨眼卖萌"] }
+      {
+        "id": "小动作",
+        "weight": 40,
+        "actions": [
+          "打招呼",
+          "左右看",
+          "转身2",
+          "眨眼卖萌"
+        ]
+      }
     ],
-    // 边缘探头：这一整段原本从主宠物继承，池子里写的是主宠物素材名（她根本没有那些素材，会 404）。
-    // 现在换成她自己的：探头时「左右看」，停在边缘期间在她自己的安静动作里随机。
     "edge": {
       "enabled": true,
       "chance": 0.15,
       "cooldownSec": 120,
       "side": "random",
-      "pool": ["左右看"],
+      "pool": [
+        "左右看"
+      ],
       "peekRatio": 0.42,
       "keepY": true,
       "hideMs": 420,
@@ -72,23 +108,41 @@
       "dropTrigger": true,
       "triggerDistRatio": 0.35,
       "parkAtEdge": true,
-      "parkedPool": ["待机", "眨眼卖萌"],
+      "parkedPool": [
+        "待机",
+        "眨眼卖萌"
+      ],
       "tiltDeg": 45,
       "tiltDir": "in",
       "tiltPivot": "feet",
       "tiltScope": "peek"
     },
-    // 注意：插件校验要求 events.balance 必须是**非空数组**（校验代码里写死的），
-    // 哪怕这只宠物 balanceEnabled=false；写成 {} 会导致整个 animations 判非法、静默回落成主宠物的池子。
-    //
-    // ⚠️⚠️ 但**千万别把日常动画名（尤其 idle 池里的）写进这里**：handleEnded 用 isEventAnim()
-    // 判断"当前动画是不是事件动画"，命中的话播完就直接回 idle、**永远不进随机链** ——
-    // 表现就是"宠物定格在待机、再也不换动作、也没有随机小动作"。
-    // 这里放一个永远不会被播放的占位名（她 balanceEnabled=false，这个池子根本不会被用到）。
-    "events": { "balance": ["balance-unused-placeholder"] }
+    // B1「看鼠标」：光标靠近就朝它那侧转身、偶尔张望；贴到身上就打招呼。
+    // lookRadius/greetRadius 是"身宽倍数"（420px 的身宽 → 默认 2.4 / 0.8 倍）。
+    // 不想要就 enabled:false，或整段删掉（默认是开的，阈值用内置默认）。
+    "cursor": {
+      "enabled": true,
+      "lookRadius": 2.4,
+      "greetRadius": 0.8,
+      "lookCooldownSec": 25,
+      "greetCooldownSec": 60
+    },
+    "events": {
+      "balance": [
+        "balance-unused-placeholder"
+      ]
+    }
   },
-  // idle 40 + turn 10 + move 10 + 小动作 40 = 100
-  // （原来 idle 70：她 70% 的时间都在重播同一段「待机」，看起来就是一动不动；现在把大头让给随机小动作）
-  "animationWeights": { "idle": 40, "turn": 10, "move": 10 },
-  "eventsRefreshSec": { "balance": 1800, "whisper": 300 }
+  "animationWeights": {
+    "idle": 40,
+    "turn": 10,
+    "move": 10
+  },
+  // A1「她的人设」：同时决定 **桌面感知 / 碎碎念 / 对话** 三处的说话风格。
+  // 不写的话她会继承主宠物那份（"Q版蓝发小女仆" ✗），所以必须自己写一份。
+  "whisperPrompt": "你是主人亲手做出来的Q版粉发小女仆（粉色长发、红色蝴蝶结、白裙），会时不时碎碎念一句。说话要自然随意、短短一句（20字以内），活泼黏人、爱撒娇，偶尔为“我是主人自己做的”这点小得意。说人话不啰嗦，不要解释你自己，不要提你是AI。",
+  "eventsRefreshSec": {
+    "balance": 1800,
+    "whisper": 900
+  }
 }

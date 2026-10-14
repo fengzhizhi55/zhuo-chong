@@ -524,8 +524,16 @@ function createPetWindows() {
       const b = win.getBounds();
       if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
       const ignoring = windowIgnore.get(win.id) !== false;
-      const next = decideWindowIgnore(b, screen.getCursorScreenPoint(), ignoring, inputBusy.get(win.id) === true);
+      const cursor = screen.getCursorScreenPoint();
+      const next = decideWindowIgnore(b, cursor, ignoring, inputBusy.get(win.id) === true);
       if (next !== ignoring) setWindowIgnore(win, next);
+      // 顺手把真实光标位置转发给渲染端：她据此「看鼠标」（见 sprite.js 的 onCursorPoint）。
+      // 复用这次已经取到的点，不额外轮询；开关与阈值在配置 animations.cursor 里，可按宠物单独关。
+      try {
+        win.webContents.send('pet:cursor', { x: cursor.x, y: cursor.y });
+      } catch {
+        /* 窗口正在销毁 */
+      }
     }, POINTER_POLL_MS);
     win.on('closed', () => {
       clearInterval(pointerTimer);

@@ -136,6 +136,14 @@ class PetSprite {
     this.anim = this.animations.idle[0] ?? '';
     this.once = true;
     this.facing = 'left';
+    // 「看鼠标」（可选，配置 animations.cursor；见 onCursorPoint）：
+    // 主进程把真实光标位置转发进来，她据此转头/打招呼。默认开，可按宠物单独关。
+    this.cursorCfg = this.animations.cursor || {};
+    // 时间戳初值给 -Infinity：否则用 performance.now() 算冷却时，"从 0 起算"会让页面刚加载的
+    // 头一个冷却周期（25 / 60 秒）内完全不反应——看上去就像没生效。
+    this.lastLookAt = -Infinity; // 上次"朝光标张望"的时间戳（冷却用）
+    this.lastGreetAt = -Infinity; // 上次"贴上来打招呼"的时间戳（冷却用）
+    this.lastFaceFlipAt = -Infinity; // 上次因光标翻镜像的时间戳（防与转身链互相打架）
     // 交互/移动
     this.dragState = { active: false, dragging: false, sx: 0, sy: 0, petX: 0, petY: 0 };
     this.justDragged = false;
@@ -559,6 +567,82 @@ class PetSprite {
       next = act.name;
     }
     this.playOnce(next);
+  }
+
+  /**
+   * 「看鼠标」：主进程按 POINTER_POLL_MS 转发真实光标位置（屏幕物理像素），这里换算成她自己的坐标系做反应。
+   *
+   * 只做三件事，且都避开交互状态、都带冷却，绝不打断她正在做的事：
+   *   1) 光标靠近（默认 2.4 倍身宽内）→ 只翻镜像朝它那侧（零成本；2 秒内不重复翻，免得和转身链打架）
+   *   2) 贴到身上（默认 0.8 倍身宽内）→ 从 **clicks 池** 挑一段打招呼（默认 60 秒一次）
+   *   3) 只是在附近 → 从 **turn 池** 挑一段张望（默认 25 秒一次）
+   *
+   * 为什么从池子里挑而不是写死动作名：每只宠物素材不同（蓝毛是"东张西望 / 点击回应-*"，
+   * 粉毛是"左右看 / 转身 / 打招呼"），从她自己的池子里挑才能两只都自然，将来加素材也不用改代码。
+   * 拖拽 / 漫游 / 抛掷 / 边缘序列 / 边缘停驻期间一律不打扰（那些状态下位置或姿态由别的调度负责）。
+   * 配置：animations.cursor = { enabled, lookRadius, greetRadius, lookCooldownSec, greetCooldownSec, look, greet }
+   */
+  onCursorPoint(p) {
+    const cfg = this.cursorCfg;
+    if (!cfg || cfg.enabled === false || !p) return;
+    // 拖拽 / 漫游 / 抛掷 / 边缘探头序列进行中不打扰（那些状态下位置与姿态由别的调度负责）。
+    // 注意**不含 edgeParked**：她停在屏幕边缘时只露出一点，但那点也该能"看你"；
+    // 而且那种状态下她的包围盒中心常常在屏幕外，所以下面要把参考点夹回桌面范围。
+    if (this.dragState.active || this.moveRef !== null || this.throwRef !== null || this.edgeSeq) return;
+    const x = toLocal(Number(p.x));
+    const y = toLocal(Number(p.y));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const half = this.halfW;
+    // 参考点 = 她的包围盒中心，夹回桌面范围：停驻 / 半出屏时用"露出来的那部分"算距离。
+    // 不夹的话中心在屏幕外，真实光标永远够不着 → 她一停边缘，"看鼠标"就永久失效。
+    let cx = this.pos.x + half;
+    let cy = this.pos.y + half;
+    if (VIEW && Number.isFinite(VIEW.w)) {
+      cx = Math.min(Math.max(cx, VIEW.x), VIEW.x + VIEW.w);
+      cy = Math.min(Math.max(cy, VIEW.y), VIEW.y + VIEW.h);
+    }
+    const dx = x - cx;
+    const dy = y - cy;
+    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+    if (dist > (cfg.lookRadius ?? 2.4) * half) return;
+    const now = performance.now();
+    // 1) 朝光标那侧（只翻镜像，不换动画）
+    const want = dx < 0 ? 'left' : 'right';
+    if (this.facing !== want && now - this.lastFaceFlipAt > 2000) {
+      this.lastFaceFlipAt = now;
+      this.setFacing(want);
+    }
+    // 2) 贴到身上 → 打招呼（clicks 池）。停驻在屏幕边缘时不打：半个身子在屏幕外，跳起来打招呼很怪。
+    if (
+      cfg.greet !== false &&
+      !this.edgeParked &&
+      dist < (cfg.greetRadius ?? 0.8) * half &&
+      this.animations.clicks.length &&
+      now - this.lastGreetAt > (cfg.greetCooldownSec ?? 60) * 1000
+    ) {
+      this.lastGreetAt = now;
+      this.lastLookAt = now; // 打过招呼也算"看过你"，顺带压掉紧随其后的张望
+      this.playOnce(S.pick(this.animations.clicks, this.anim));
+      return;
+    }
+    // 3) 在附近 → 朝它张望（turn 池）
+    if (
+      cfg.look !== false &&
+      this.animations.turn.length &&
+      now - this.lastLookAt > (cfg.lookCooldownSec ?? 25) * 1000
+    ) {
+      this.lastLookAt = now;
+      this.playOnce(S.pick(this.animations.turn, this.anim));
+    }
+  }
+
+  /** 只翻镜像、不换动画：光标在她哪一侧，她就朝哪边。 */
+  setFacing(next) {
+    if (next !== 'left' && next !== 'right') return;
+    if (this.facing === next) return;
+    this.facing = next;
+    const el = this.front === 0 ? this.videoA : this.videoB;
+    if (el) el.style.transform = next === 'right' ? 'scaleX(-1)' : '';
   }
 
   handleEnded() {
