@@ -178,6 +178,9 @@ class PetSprite {
     this.socialNextAt = 0; // 挨在一起时，下一次"要不要再聊一句"的时刻
     this.socialWatchAt = 0; // 回话方盯对方气泡的节流时刻（2 秒一次 /state）
     this.socialLastSeenCounter = 0; // 已经接过的对方气泡 counter（避免重复接同一句）
+    this.bubblePlaceAt = 0; // 气泡避让量刷新的节流时刻
+    this.bubblePlaceX = null; // 上次算避让量时的她位置（位置没变就不重算）
+    this.bubblePlaceY = null;
     // 判定除了跟着位置广播跑，还要有自己的低频心跳：位置没变时主进程不会上报，
     // 光靠广播会让"回话"被拖到下一次位置变化（实测拖成了 5.5 秒）。1 秒一次，配合 500ms 节流足够。
     this.socialTimer = window.setInterval(() => this.socialTick(), 1000);
@@ -705,6 +708,9 @@ class PetSprite {
    * 配置：animations.social = { enabled, radiusRatio, greetChance, greetCooldownSec, lines }
    */
   socialTick() {
+    // 气泡避让量/翻面要跟着她的位置走（她可能边说话边走动、或被探头挪动）。放在 guard 之前：
+    // 探头/停驻期间也会动位置，同样需要刷新。
+    this.refreshBubblePlacement();
     const cfg = this.socialCfg;
     if (!cfg || cfg.enabled === false) return;
     const now = performance.now();
@@ -1115,10 +1121,15 @@ class PetSprite {
   }
 
   /** 随机待机链的入口：命中概率且过了冷却就交棒（true = 本次已接管，调用方别再抽别的动作） */
-  tryEdgeIdle() {    const e = this.edgeCfg();
+  tryEdgeIdle() {
+    const e = this.edgeCfg();
     if (!e || e.chance <= 0) return false;
     // 宠物固定（pets[].fixedEnabled）：不自己挪窝——边缘待机整段都是挪窗，与 turn/move 同一条约束
     if (this.pet.fixedEnabled) return false;
+    // 已经停在边缘了：别再走一遍"滑出去→探头→回位→停驻" ✗ —— 她本来就在那儿，
+    // 再走一遍会表现为在屏幕边缘反复滑出/抽动（用户反馈的"点击就卡出屏幕"就是这么来的：
+    // 点她一下会把动作链拉回待机，然后这里又中签重放边缘序列）。想换边请直接拖她。
+    if (this.edgeParked) return false;
     if (performance.now() < this.edgeNextAt) return false; // 冷却中
     if (Math.random() >= e.chance) return false;
     return this.startEdgePeek(e);
@@ -1692,13 +1703,13 @@ class PetSprite {
     }
     this.stopThrow(); // 空中抓取：从当前落点开始新拖拽（this.pos 实时）
     this.stopDragFollow();
-    // 边缘待机中抓它：先取消整段（不要回原位——宠物就在指针下，回原位会让它从手里跳走），
-    // 之后 stopMove() 不会再重复处理（edgeSeq 已清空）。
-    if (this.edgeSeq) this.cancelEdgePeek(false);
-    this.stopMove();
+    // ⚠️ 这里**不能**取消边缘序列 ✗：纯点击（按下即松开）也会走到这里，而 stopMove() 内部会
+    // cancelEdgePeek(...) —— 一按就把她按在屏幕外那半 / 把她扶正，就成了"点一下卡出屏幕"。
+    // 取消边缘序列的时机是**真的拖起来**（超过阈值），见 onPointerMove 的 drag 起始块。
+    this.stopMoveUnlessOnEdge();
     this.dragTrail = [];
     this.hit.classList.add('dragging');
-    this.stopMove();
+    this.stopMoveUnlessOnEdge();
     try {
       this.hit.setPointerCapture(e.pointerId);
     } catch {
@@ -1732,7 +1743,9 @@ class PetSprite {
     if (!d.dragging) {
       if (Math.hypot(dx, dy) < S.DRAG_THRESHOLD) return;
       d.dragging = true;
-      // 真拖起来了：解除"停在边缘"（站直、允许自行漫游）——用户拖它就是要它出来
+      // 真拖起来了：先取消在途的边缘序列（此时"不回原位"是对的——宠物就在指针下），
+      // 再解除"停在边缘"（站直、允许自行漫游）。顺序不能反：序列取消会动位置。
+      if (this.edgeSeq) this.cancelEdgePeek(false);
       this.unparkEdge();
       // 真正开始拖拽才把舞台拍平（人物随光标拿起；与浏览器 dragging 语义一致）
       this.stage.style.transform = 'none';
@@ -1883,14 +1896,24 @@ class PetSprite {
     if (this.pressScoreFired) {
       this.pressScoreFired = false;
       this.stopThrow();
-      this.stopMove();
+      this.stopMoveUnlessOnEdge();
       return;
     }
     this.stopThrow(); // 点击飞行中的宠物 = 收手停住（再播点击回应）
-    this.stopMove();
+    this.stopMoveUnlessOnEdge();
     if (!this.animations.clicks.length) return;
     this.pendingSquash = true; // 等新点击动画切到前台后 Q 弹（压新首帧，与浏览器一致）
     this.playOnce(S.pick(this.animations.clicks));
+  }
+
+  /**
+   * 点击路径专用：普通漫游中点她需要停步，但**停在边缘 / 正在探头时不能停** ✗ ——
+   * stopMove() 内部会 `cancelEdgePeek(true)`，那等于"取消边缘序列 + 扶正 + 拉回原位"，
+   * 而点她只是想看她做个动作（用户原话："保存侧着的状态，做点击后的动作"）。
+   */
+  stopMoveUnlessOnEdge() {
+    if (this.edgeSeq || this.edgeParked) return;
+    this.stopMove();
   }
 
   // ---- 右键菜单（统一自绘组件：树+渲染都来自 shared-core 的同一份 menu 模块） ----
@@ -2300,5 +2323,54 @@ class PetSprite {
       /* 位置拿不到就按默认（头顶）显示 */
     }
     window.__dshPetDebug.lastBubbleTitle = this.bubble.textContent.slice(0, 60);
+    // 贴边避让 + 贴顶翻面：先按当前位置算一次，之后由 refreshBubblePlacement() 跟着位置刷新。
+    try {
+      this.bubble.style.setProperty('--bubble-shift', this.bubbleShiftFor(this.bubble) + 'px');
+      this.bubble.classList.toggle('is-below', this.bubbleIsBelow());
+      this.bubblePlaceX = this.pos.x;
+      this.bubblePlaceY = this.pos.y;
+    } catch {
+      /* 量不到就按居中显示 */
+    }
+  }
+
+  /** 气泡的贴边/贴顶避让在渲染气泡那一刻算一次；但她可能**边说话边走动**（或正被探头挪动），
+   *  位置一变旧值就不对了。这里按位置变化重算（节流 200ms；位置没变直接跳过，offsetWidth 不会反复触发排版）。 */
+  refreshBubblePlacement() {
+    if (!this.bubbleOn && !this.whisperOn && !this.workOn) return;
+    const now = performance.now();
+    if (now - this.bubblePlaceAt < 200) return;
+    this.bubblePlaceAt = now;
+    if (this.bubblePlaceX === this.pos.x && this.bubblePlaceY === this.pos.y) return;
+    this.bubblePlaceX = this.pos.x;
+    this.bubblePlaceY = this.pos.y;
+    try {
+      this.bubble.style.setProperty('--bubble-shift', this.bubbleShiftFor(this.bubble) + 'px');
+      this.bubble.classList.toggle('is-below', this.bubbleIsBelow());
+    } catch {
+      /* 量不到就保持原样 */
+    }
+  }
+
+  /** 头顶气泡会不会跑到屏幕上方之外（贴顶时改为画到脚下） */
+  bubbleIsBelow() {
+    const myTop = (this.pos ? this.pos.y : 0) - (Number.isFinite(VIEW && VIEW.y) ? VIEW.y : 0);
+    return myTop < this.size * 0.55;
+  }
+
+  /** 气泡的贴边避让量（px）：0 = 居中正好，正数往右挪、负数往左挪。
+   *  用气泡的 offsetWidth（含内边距的布局宽度）与她的中心比较；超出桌面几何（VIEW）就补回来。
+   *  注意：气泡在宠物窗口内部，最多只能挪到窗口边缘（窗口四周各留有 0.5×身宽的外扩余量），
+   *  所以极端情况（她几乎整个在屏幕外）仍可能不够 —— 那时把 WINDOW_MARGIN_RATIO 调大一点。 */
+  bubbleShiftFor(el) {
+    const w = el && el.offsetWidth ? el.offsetWidth : 0;
+    if (!w) return 0;
+    const half = w / 2;
+    const cx = (this.pos ? this.pos.x : 0) + this.halfW; // 她的中心（视口本地坐标）
+    const left = Number.isFinite(VIEW && VIEW.x) ? VIEW.x : 0;
+    const right = left + (Number.isFinite(VIEW && VIEW.w) ? VIEW.w : window.innerWidth);
+    if (cx - half < left) return Math.round(left - (cx - half));
+    if (cx + half > right) return Math.round(right - (cx + half));
+    return 0;
   }
 }

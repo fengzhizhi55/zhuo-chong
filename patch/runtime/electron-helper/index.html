@@ -67,7 +67,9 @@
       .pet-bubble {
         position: absolute;
         left: 50%;
-        transform: translateX(-50%);
+        /* --bubble-shift：贴屏幕左右边缘时由 sprite.renderBubble() 算出的水平避让量（px）。
+           她停在边缘待机时大半个身子在屏幕外，气泡若仍以她为中心就会被屏幕边切掉一半。 */
+        transform: translateX(calc(-50% + var(--bubble-shift, 0px)));
         bottom: calc(100% - var(--pet-size, 462px) * 0.108);
         min-width: calc(var(--pet-size, 462px) * 0.26);
         max-width: calc(var(--pet-size, 462px) * 0.5);
